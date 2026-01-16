@@ -734,7 +734,7 @@ static bool grow_ept_tracks(struct kvm *kvm,
 {
 	struct kvm_memory_slot *slot;
 	u16 old = kvm->arch.mmu_root_hpa_altviews_count;
-	size_t i;
+	int i;
 
 	for (i = 0; i < KVM_ADDRESS_SPACE_NUM; i++)
 		kvm_for_each_memslot(slot, __kvm_memslots(kvm, i))
