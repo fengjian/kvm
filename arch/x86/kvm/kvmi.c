@@ -762,12 +762,13 @@ static void shrink_ept_tracks(struct kvm *kvm, u16 new)
 int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 {
 	struct kvm_vcpu *vcpu;
-	struct hlist_head **page_hash;
+	struct hlist_head **new_page_hash;
 	struct kvm_mmu *mmu;
 	struct radix_tree_root *access_tree;
-	hpa_t *views;
+	hpa_t *new_views;
 	u16 view = 0, views_count;
-	size_t i, j;
+	u16 old_views_count;
+	size_t i, j, k;
 	bool needs_resize;
 
 	spin_lock(&kvm->mmu_lock);
@@ -782,7 +783,8 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 	}
 
 	views_count = view + 1;
-	needs_resize = views_count > kvm->arch.mmu_root_hpa_altviews_count;
+	old_views_count = kvm->arch.mmu_root_hpa_altviews_count;
+	needs_resize = views_count > old_views_count;
 
 	if (!grow_ept_tracks(kvm, views_count)) {
 		spin_unlock(&kvm->mmu_lock);
@@ -797,41 +799,63 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 		}
 
 		if (needs_resize) {
-			page_hash = krealloc(mmu->page_hash,
-					     views_count * sizeof(struct hlist_head *),
-					     GFP_KERNEL_ACCOUNT);
-			if (!page_hash) {
+			new_page_hash = kvcalloc(views_count,
+						 sizeof(*new_page_hash),
+						 GFP_KERNEL_ACCOUNT);
+			if (!new_page_hash) {
 				spin_unlock(&kvm->mmu_lock);
 				return -KVM_ENOMEM;
 			}
-			for (j = kvm->arch.mmu_root_hpa_altviews_count; j < views_count; j++)
-				page_hash[j] = kzalloc(KVM_NUM_MMU_PAGES *
-						       sizeof(struct hlist_head),
-						       GFP_KERNEL_ACCOUNT);
-			mmu->page_hash = page_hash;
+			memcpy(new_page_hash, mmu->page_hash,
+			       old_views_count * sizeof(*new_page_hash));
+			for (j = old_views_count; j < views_count; j++) {
+				new_page_hash[j] = kvcalloc(KVM_NUM_MMU_PAGES,
+							    sizeof(*new_page_hash[j]),
+							    GFP_KERNEL_ACCOUNT);
+				if (!new_page_hash[j]) {
+					for (k = old_views_count; k < j; k++)
+						kvfree(new_page_hash[k]);
+					kvfree(new_page_hash);
+					spin_unlock(&kvm->mmu_lock);
+					return -KVM_ENOMEM;
+				}
+			}
 
-			views = krealloc(mmu->root_hpa_altviews,
-					 views_count * sizeof(hpa_t), GFP_NOIO);
-			if (!views) {
+			new_views = kvcalloc(views_count, sizeof(*new_views),
+					     GFP_NOIO);
+			if (!new_views) {
+				for (k = old_views_count; k < views_count; k++)
+					kvfree(new_page_hash[k]);
+				kvfree(new_page_hash);
 				spin_unlock(&kvm->mmu_lock);
 				return -KVM_ENOMEM;
 			}
-			mmu->root_hpa_altviews = views;
-			mmu->root_hpa_altviews[view] = INVALID_PAGE;
+			memcpy(new_views, mmu->root_hpa_altviews,
+			       old_views_count * sizeof(*new_views));
+			for (j = old_views_count; j < views_count; j++)
+				new_views[j] = INVALID_PAGE;
+
+			kvfree(mmu->page_hash);
+			mmu->page_hash = new_page_hash;
+			kvfree(mmu->root_hpa_altviews);
+			mmu->root_hpa_altviews = new_views;
 		}
 	}
 
 	if (needs_resize) {
-		access_tree = krealloc(kvm->kvmi->access_tree,
-					views_count * sizeof(struct radix_tree_root),
-					GFP_KERNEL_ACCOUNT);
+		access_tree = kvcalloc(views_count,
+				       sizeof(*access_tree),
+				       GFP_KERNEL_ACCOUNT);
 		if (!access_tree) {
 			spin_unlock(&kvm->mmu_lock);
 			return -KVM_ENOMEM;
 		}
-		for (i = kvm->arch.mmu_root_hpa_altviews_count; i < view; i++)
-			INIT_RADIX_TREE(&kvm->kvmi->access_tree[i],
+		memcpy(access_tree, kvm->kvmi->access_tree,
+		       old_views_count * sizeof(*access_tree));
+		for (i = old_views_count; i < views_count; i++)
+			INIT_RADIX_TREE(&access_tree[i],
 				GFP_KERNEL & ~__GFP_DIRECT_RECLAIM);
+		kvfree(kvm->kvmi->access_tree);
 		kvm->kvmi->access_tree = access_tree;
 		kvm->arch.mmu_root_hpa_altviews_count = views_count;
 
