@@ -767,6 +767,7 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 		hpa_t *views;
 	};
 	struct kvmi_ept_view_alloc *allocs = NULL;
+	struct kvm_introspection *kvmi;
 	struct kvm_vcpu *vcpu;
 	struct hlist_head **new_page_hash;
 	struct kvm_mmu *mmu;
@@ -779,6 +780,10 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 	bool tracks_grown = false;
 	int ret = 0;
 
+	kvmi = kvmi_get(kvm);
+	if (!kvmi)
+		return -KVM_EINVAL;
+
 	spin_lock(&kvm->mmu_lock);
 
 	while (view < PTRS_PER_PGD - 1
@@ -786,8 +791,8 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 		++view;
 
 	if (++view >= PTRS_PER_PGD) {
-		spin_unlock(&kvm->mmu_lock);
-		return -KVM_EINVAL;
+		ret = -KVM_EINVAL;
+		goto err;
 	}
 
 	views_count = view + 1;
@@ -795,8 +800,8 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 	needs_resize = views_count > old_views_count;
 
 	if (!grow_ept_tracks(kvm, views_count)) {
-		spin_unlock(&kvm->mmu_lock);
-		return -KVM_ENOMEM;
+		ret = -KVM_ENOMEM;
+		goto err;
 	}
 	tracks_grown = true;
 
@@ -867,7 +872,7 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 			ret = -KVM_ENOMEM;
 			goto err;
 		}
-		memcpy(access_tree, kvm->kvmi->access_tree,
+		memcpy(access_tree, kvmi->access_tree,
 		       old_views_count * sizeof(*access_tree));
 		for (i = old_views_count; i < views_count; i++)
 			INIT_RADIX_TREE(&access_tree[i],
@@ -889,13 +894,13 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 			kvfree(old_views);
 		}
 
-		kvfree(kvm->kvmi->access_tree);
-		kvm->kvmi->access_tree = access_tree;
+		kvfree(kvmi->access_tree);
+		kvmi->access_tree = access_tree;
 		kvm->arch.mmu_root_hpa_altviews_count = views_count;
 
-		bitmap_zero(kvm->kvmi->mmu_reload_mask, KVM_MAX_VCPUS);
+		bitmap_zero(kvmi->mmu_reload_mask, KVM_MAX_VCPUS);
 		for (i = 0; i < atomic_read(&kvm->online_vcpus); i++)
-			set_bit(i, kvm->kvmi->mmu_reload_mask);
+			set_bit(i, kvmi->mmu_reload_mask);
 		kvm_reload_remote_mmus(kvm);
 	}
 	
@@ -904,7 +909,7 @@ int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 	if (needs_resize) {
 		do {
 			smp_mb__after_atomic();
-			i = bitmap_empty(kvm->kvmi->mmu_reload_mask,
+			i = bitmap_empty(kvmi->mmu_reload_mask,
 					 KVM_MAX_VCPUS);
 		} while (!i);
 	}
@@ -934,9 +939,11 @@ err:
 		}
 	}
 	kvfree(allocs);
+	kvmi_put(kvm);
 	return ret;
 out:
 	kvfree(allocs);
+	kvmi_put(kvm);
 	return ret;
 }
 
@@ -948,6 +955,7 @@ int kvmi_arch_destroy_ept_view(struct kvm *kvm, u16 view, bool sync)
 		hpa_t *views;
 	};
 	struct kvmi_ept_view_alloc *allocs = NULL;
+	struct kvm_introspection *kvmi;
 	struct kvm_vcpu *vcpu;
 	struct kvm_mmu *mmu; 
 	struct hlist_head **new_page_hash;
@@ -959,12 +967,16 @@ int kvmi_arch_destroy_ept_view(struct kvm *kvm, u16 view, bool sync)
 	u16 old_views_count;
 	int ret = 0;
 
+	kvmi = kvmi_get(kvm);
+	if (!kvmi)
+		return -KVM_EINVAL;
+
 	spin_lock(&kvm->mmu_lock);
 
 	if (view < 1 || view >= PTRS_PER_PGD
 	    || !kvm->arch.mmu_root_hpa_altviews_occupied[view - 1]) {
-		spin_unlock(&kvm->mmu_lock);
-		return -KVM_EINVAL;
+		ret = -KVM_EINVAL;
+		goto err;
 	}
 
 	while (i < PTRS_PER_PGD - 1) {
@@ -991,7 +1003,7 @@ int kvmi_arch_destroy_ept_view(struct kvm *kvm, u16 view, bool sync)
 			ret = -KVM_ENOMEM;
 			goto err;
 		}
-		memcpy(access_tree, kvm->kvmi->access_tree,
+		memcpy(access_tree, kvmi->access_tree,
 		       views_count * sizeof(*access_tree));
 	}
 
@@ -1058,14 +1070,14 @@ int kvmi_arch_destroy_ept_view(struct kvm *kvm, u16 view, bool sync)
 		}
 
 		shrink_ept_tracks(kvm, views_count);
-		kvfree(kvm->kvmi->access_tree);
-		kvm->kvmi->access_tree = access_tree;
+		kvfree(kvmi->access_tree);
+		kvmi->access_tree = access_tree;
 		kvm->arch.mmu_root_hpa_altviews_count = views_count;
 
 		if (likely(sync)) {
-			bitmap_zero(kvm->kvmi->mmu_reload_mask, KVM_MAX_VCPUS);
+			bitmap_zero(kvmi->mmu_reload_mask, KVM_MAX_VCPUS);
 			for (i = 0; i < atomic_read(&kvm->online_vcpus); i++)
-				set_bit(i, kvm->kvmi->mmu_reload_mask);
+				set_bit(i, kvmi->mmu_reload_mask);
 		}
 		kvm_reload_remote_mmus(kvm);
 	}
@@ -1081,7 +1093,7 @@ int kvmi_arch_destroy_ept_view(struct kvm *kvm, u16 view, bool sync)
 	if (needs_resize && likely(sync)) {
 		do {
 			smp_mb__after_atomic();
-			i = bitmap_empty(kvm->kvmi->mmu_reload_mask,
+			i = bitmap_empty(kvmi->mmu_reload_mask,
 					 KVM_MAX_VCPUS);
 		} while (!i);
 	}
@@ -1104,6 +1116,7 @@ err:
 	kvfree(access_tree);
 out:
 	kvfree(allocs);
+	kvmi_put(kvm);
 	return ret;
 }
 
