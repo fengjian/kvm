@@ -286,6 +286,28 @@ static void kvmi_clear_mem_access(struct kvm *kvm)
 	srcu_read_unlock(&kvm->srcu, idx);
 }
 
+void kvmi_clear_access_tree_view(struct kvm *kvm, u16 view)
+{
+	struct kvm_introspection *kvmi = KVMI(kvm);
+	struct radix_tree_iter iter;
+	void **slot;
+
+	if (!kvmi)
+		return;
+
+	if (view >= kvm->arch.mmu_root_hpa_altviews_count)
+		return;
+
+	write_lock(&kvmi->access_tree_lock);
+	radix_tree_for_each_slot(slot, &kvmi->access_tree[view], &iter, 0) {
+		struct kvmi_mem_access *m = *slot;
+
+		radix_tree_iter_delete(&kvmi->access_tree[view], &iter, slot);
+		kmem_cache_free(radix_cache, m);
+	}
+	write_unlock(&kvmi->access_tree_lock);
+}
+
 static void kvmi_clear_altviews(struct kvm *kvm)
 {
 	u16 view, default_view = 0;
@@ -1604,7 +1626,7 @@ static void kvmi_track_create_slot(struct kvm *kvm,
 
 	idx = srcu_read_lock(&kvm->srcu);
 	spin_lock(&kvm->mmu_lock);
-	read_lock(&kvmi->access_tree_lock);
+	write_lock(&kvmi->access_tree_lock);
 
 	while (start < end) {
 		struct kvmi_mem_access *m;
@@ -1631,7 +1653,7 @@ static void kvmi_track_create_slot(struct kvm *kvm,
 		start++;
 	}
 
-	read_unlock(&kvmi->access_tree_lock);
+	write_unlock(&kvmi->access_tree_lock);
 	spin_unlock(&kvm->mmu_lock);
 	srcu_read_unlock(&kvm->srcu, idx);
 
@@ -1676,6 +1698,7 @@ static void kvmi_insert_mem_access(struct kvm *kvm, gfn_t gfn, u8 access,
 {
 	struct kvm_introspection *kvmi;
 	struct kvmi_mem_access *m;
+	int ret;
 
 	kvmi = kvmi_get(kvm);
 	if (!kvmi)
@@ -1685,6 +1708,7 @@ static void kvmi_insert_mem_access(struct kvm *kvm, gfn_t gfn, u8 access,
 
 	if (!m) {
 		WARN_ON(!m);
+		kvmi_put(kvm);
 		return;
 	}
 
@@ -1692,14 +1716,20 @@ static void kvmi_insert_mem_access(struct kvm *kvm, gfn_t gfn, u8 access,
 	m->access = access;
 	m->write_bitmap = write_bitmap;
 
-	if (WARN_ON(radix_tree_preload(GFP_KERNEL)))
+	if (radix_tree_preload(GFP_KERNEL)) {
+		kmem_cache_free(radix_cache, m);
+		kvmi_put(kvm);
 		return;
+	}
 
 	write_lock(&kvmi->access_tree_lock);
-	radix_tree_insert(&kvmi->access_tree[view], gfn, m);
+	ret = radix_tree_insert(&kvmi->access_tree[view], gfn, m);
 	write_unlock(&kvmi->access_tree_lock);
 
 	radix_tree_preload_end();
+
+	if (ret)
+		kmem_cache_free(radix_cache, m);
 
 	kvmi_put(kvm);
 }
@@ -1720,8 +1750,8 @@ static void kvmi_track_flush_slot(struct kvm *kvm, struct kvm_memory_slot *slot,
 					start, view, &write_bitmap);
 			if (access != full_access) {
 				kvmi_insert_mem_access(kvm, start,
-						write_bitmap,
-						access, view);
+						access,
+						write_bitmap, view);
 				/* Remove all restrictions */
 				kvmi_arch_update_page_tracking(kvm,
 						slot,

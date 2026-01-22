@@ -897,6 +897,7 @@ int kvmi_arch_destroy_ept_view(struct kvm *kvm, u16 view, bool sync)
 	}
 
 	kvm->arch.mmu_root_hpa_altviews_occupied[view - 1] = false;
+	kvmi_clear_access_tree_view(kvm, view);
 
 	while (i < PTRS_PER_PGD - 1) {
 		if (i > 0 && kvm->arch.mmu_root_hpa_altviews_occupied[i - 1])

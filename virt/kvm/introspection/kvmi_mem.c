@@ -444,4 +444,5 @@ void kvmi_mem_init(void)
 void kvmi_mem_exit(void)
 {
 	hrtimer_cancel(&token_timer);
+	cancel_work_sync(&token_work);
 }

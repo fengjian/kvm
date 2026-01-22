@@ -165,6 +165,7 @@ void kvmi_handle_common_event_actions(struct kvm *kvm,
 				      u32 action, const char *str);
 struct kvm_introspection * __must_check kvmi_get(struct kvm *kvm);
 void kvmi_put(struct kvm *kvm);
+void kvmi_clear_access_tree_view(struct kvm *kvm, u16 view);
 void kvmi_send_pending_event(struct kvm_vcpu *vcpu);
 int kvmi_cmd_vm_control_events(struct kvm_introspection *kvmi,
 				unsigned int event_id, bool enable);
