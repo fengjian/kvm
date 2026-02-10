@@ -15,6 +15,12 @@
 
 #include <trace/events/kvmi.h>
 
+struct kvmi_ept_view_alloc {
+	struct kvm_mmu *mmu;
+	struct hlist_head **page_hash;
+	hpa_t *views;
+};
+
 static unsigned int kvmi_vcpu_mode(const struct kvm_vcpu *vcpu,
 				   const struct kvm_sregs *sregs)
 {
@@ -759,13 +765,9 @@ static void shrink_ept_tracks(struct kvm *kvm, u16 new)
 			shrink_ept_tracks_for_memslot(slot, kvm->arch.mmu_root_hpa_altviews_count, new);
 }
 
+
 int kvmi_arch_cmd_create_ept_view(struct kvm *kvm)
 {
-	struct kvmi_ept_view_alloc {
-		struct kvm_mmu *mmu;
-		struct hlist_head **page_hash;
-		hpa_t *views;
-	};
 	struct kvmi_ept_view_alloc *allocs = NULL;
 	struct kvm_introspection *kvmi;
 	struct kvm_vcpu *vcpu;
@@ -949,11 +951,6 @@ out:
 
 int kvmi_arch_destroy_ept_view(struct kvm *kvm, u16 view, bool sync)
 {
-	struct kvmi_ept_view_alloc {
-		struct kvm_mmu *mmu;
-		struct hlist_head **page_hash;
-		hpa_t *views;
-	};
 	struct kvmi_ept_view_alloc *allocs = NULL;
 	struct kvm_introspection *kvmi;
 	struct kvm_vcpu *vcpu;
